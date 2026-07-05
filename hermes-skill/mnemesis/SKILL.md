@@ -1,6 +1,6 @@
 ---
 name: mnemesis
-description: Discover and load project contracts that define inputs, expected filesystem outputs, and outcome-specific instructions.
+description: Load and edit project contracts that define inputs, expected filesystem outputs, and outcome-specific instructions. Use when the user asks about a registered project, asks to update or draft a contract, or refers to a project by name/description.
 ---
 # Mnemesis
 
@@ -24,6 +24,7 @@ mnemesis load <query>                  # load a contract by name or partial matc
 mnemesis save <project>                # save the draft for <project> to the registry
 mnemesis save <project> --yes          # accept every pending change without further prompting
 mnemesis save <project> --accept <path>   # accept only the change at <path>; repeatable
+mnemesis verify <project>              # check that every declared output path exists with the right type
 mnemesis --schema                      # print the embedded JSON Schema for contracts
 ```
 
@@ -35,6 +36,16 @@ mnemesis --schema                      # print the embedded JSON Schema for cont
 2. **Fuzzy match.** If no exact match, `load` ranks all projects by similarity (token coverage, jaro-winkler, exact-name bonus) and returns `status: "ambiguous"` with a scored list of candidates.
 3. **No match.** If the registry is empty or no candidate scores above the noise floor, the response is `status: "not_found"` with the query echoed back.
 
+### Multi-word queries
+
+The CLI does NOT parse multi-word arguments — `mnemesis load foo bar` exits 2 with "unexpected argument 'bar' found". And if the user pastes "load mmx charts", falling back to the naive hyphen-join (`mmx-charts`) gives a different lookup than either token. Before declaring `not_found`, try the obvious normalisations in order:
+
+1. Hyphen-join the words: `load mmx-charts` from "load mmx charts".
+2. Try each individual word as a token (`load mmx`, `load charts`) — one of them may match an existing project that the full phrase wouldn't.
+3. Try the most-likely single token (the longer one usually wins, since descriptions are noun-phrases: "load mmx" beats "load charts" when the project is mmx-something).
+
+Only after 2-3 normalisations all return `not_found` should you surface the "no contract yet, want me to draft?" question. Don't ask on the first miss — it's almost always a tokenisation issue.
+
 Edit the file at `draft_path` to make changes. Never edit `projects/*.yaml` directly — they will be overwritten the next time `save` writes that project.
 
 ## Save
@@ -42,7 +53,7 @@ Edit the file at `draft_path` to make changes. Never edit `projects/*.yaml` dire
 `save <project>` reads `drafts/<project>.yaml`, validates it, and writes it to `projects/<project>.yaml` atomically. The behaviour depends on whether the project already exists:
 
 - **First save (no existing project).** The draft becomes the registry entry. No diff required.
-- **Update save (project exists).** The draft is diffed against the existing project. Every change is reported as a path like `project.description`, `inputs[build].outputs[bin].location`, or `inputs[deploy].actions[successful-deploy].instructions`.
+- **Update save (project exists).** The draft is diffed against the existing project. Every change is reported as a path like `project.description`, `inputs[build].outputs[bin].location`, or `inputs[deploy].actions[successful-deploy].instructions`. For the full path grammar and `--accept` matching rules, see `references/diff-path-grammar.md`.
 
 Three outcomes from `save`:
 
@@ -51,6 +62,23 @@ Three outcomes from `save`:
 - **Pending changes, exit 1** — the draft differs from the existing project. The response prints the full diff as JSON to stderr, listing every `added`, `modified`, or `removed` field. Re-run with `--yes` to accept every change, or with `--accept <path>` (repeatable) to accept only specific fields by their diff path.
 
 Validation runs on every save; a contract with an empty slug, duplicate input name, or missing location is rejected before any file is written.
+
+## Verify
+
+`verify <project>` reads the committed contract from `projects/<project>.yaml` and checks that every declared `outputs[]` path actually exists on the filesystem with the declared type (`file` or `directory`). Tilde-prefixed paths are expanded against `$HOME`.
+
+The response includes:
+
+- `summary`: counts of `total`, `ok`, `missing`, and `wrong_type` checks.
+- `details`: one entry per output, with the raw path, declared type, and outcome.
+
+Each entry's `outcome` is one of:
+
+- `ok` — the path exists and matches its declared type.
+- `missing` — the path does not exist on disk.
+- `wrong_type` with `found: "file"` or `found: "directory"` — the path exists but is the wrong kind.
+
+Exit code is 0 when all checks pass, 1 when any check fails or the project is not in the registry. Use this command to confirm that the contract's claimed filesystem state still matches reality after a build or deploy — `save` does not verify paths itself.
 
 ## Tracking the currently loaded contract
 
@@ -76,6 +104,18 @@ If a `save` call needs the project name and you have lost track, re-run `load` o
    - Or, if the user has already approved the whole edit, re-run `save <project> --yes`.
 5. Confirm by reading back with `mnemesis load <project>` and comparing the contract.
 
+### Disambiguating "the project" from "a contract in the registry"
+
+When the user says "load X", X might be:
+
+- **A project name in the registry** — proceed with `load X`.
+- **A project the user works on that has no contract yet** — `load X` returns `not_found`. The next step is drafting, not clarifying.
+- **A project outside the scope of mnemesis entirely** (e.g. a question about a third-party tool that has nothing to do with the registry) — clarify briefly that mnemesis is for working with contracts in the registry, not for general project documentation.
+
+The signal: if `load X` returns `not_found` and the user previously seemed to expect a contract to exist, the answer is "no contract for X yet; want me to draft one?". If the user's request was about something the registry can never satisfy (a question about a system that has nothing to do with mnemesis), say so and step out. Do not auto-draft if the user clearly wanted something else — but also do not ask "do you want a contract?" before trying `load` first; that wastes a turn.
+
+For self-referential contracts (a contract describing the project the registry itself lives in, or the project you are currently in), drafting in the same turn as the failed load is the right move. See `templates/build-deploy-contract.yaml` for a starting shape.
+
 ## Drafting a new contract
 
 When `load` returns `not_found`, draft from scratch:
@@ -90,6 +130,19 @@ When `load` returns `not_found`, draft from scratch:
 
 The full schema is available via `mnemesis --schema` for self-checking.
 
+For a copy-paste starting shape, see `templates/build-deploy-contract.yaml`.
+
+### Drafting for an existing-but-unregistered project
+
+A common case: the user is already running the project (scripts in `~/.hermes/scripts/`, code in `~/projects/<name>/`, etc.) and wants the contract to formalise what's there. In this case:
+
+1. **Read the actual code first** — search the project tree for `savefig`, `to_file`, `output`, hard-coded paths. Don't invent output locations; copy them from the source. For cron-driven projects, also read the .sh wrappers — they often pin interpreter paths (`/usr/bin/python3` for matplotlib) that the contract should reference.
+2. **Map outputs 1:1** — for each script that produces a file, declare that exact path. If the script writes to `/tmp/foo.png` and `shutil.copy2`s to `/var/www/.../foo.png`, both belong in `outputs[]` (the web copy is the user-visible one, the tmp is the render).
+3. **Encode failure modes in `failed-*` actions** — any trap you've already debugged (cron python missing matplotlib, OOM on a specific savefig flag, stale input file) goes into the `instructions` so the next session starts already knowing.
+4. **Optionally consolidate the source tree.** The user may want the live scripts copied to `~/projects/<name>/` as part of the same move — confirm before doing this in one pass. If the .sh wrappers hard-code the original script path, flag that they'll need patching to be self-contained.
+
+Don't ask "want me to copy the scripts too?" — just do the contract, then surface the inconsistency (hard-coded path) as a follow-up the user can opt into.
+
 ## Rules
 
 - Do not invent project contracts, output locations, output types, or outcome instructions.
@@ -99,3 +152,34 @@ The full schema is available via `mnemesis --schema` for self-checking.
 - Edit `drafts/*.yaml`, never `projects/*.yaml`. The registry file is owned by `save`.
 - If a contract is not found, draft a new one rather than guessing at structure.
 - When `save` returns `pending_changes`, surface the diff to the user before re-running with `--accept` or `--yes`.
+
+## Common pitfalls
+
+### `patch` mangles multiline YAML block scalars
+
+When `old_string` spans the interior of a `instructions: |` block (or any block-scalar region), `patch` can re-indent the replacement continuation lines, leaving YAML that parses but looks visually wrong (e.g. 16-space indent inside a 6-space block). Verified by:
+
+```bash
+python3 -c "import yaml; yaml.safe_load(open('~/.mnemesis/drafts/<name>.yaml'))"
+```
+
+For wide rewrites of a block scalar (more than 2-3 lines), prefer `write_file` over `patch`. Use `patch` only for single-line edits or short blocks where you can eyeball the result.
+
+### `patch` on last-line no-trailing-newline files concatenates the next byte
+
+When `old_string` is the last line of a file with no terminating newline, the byte immediately after (often `>/dev/null` on a bash wrapper) gets concatenated into the replacement line, producing unterminated quotes or missing-newline syntax errors. Bash wrappers are a common victim:
+
+```
+# WRONG — bash -n will catch the missing close-quote
+exec /usr/bin/python3 "$(dirname "$0")/mmx_heatmap_chart.py "$@" >/dev/null
+```
+
+Mitigations:
+
+- Include the trailing `\n` explicitly in `old_string` (and `new_string`).
+- For whole-file wrapper rewrites, use `write_file`.
+- Always verify after: `bash -n path/to/wrapper.sh` for `.sh`, `python3 -c "import yaml; ..."` for YAML.
+
+### Output paths in instructions: prefer `~` over `/home/<user>/`
+
+When writing path references into a contract's `instructions` blocks, use `~/projects/<name>/...` and `~/hermes/...` — not `/home/<user>/...`. The contract may be shared, copied, or read by other agents; absolute home paths embed the current user's identity. This matches the broader "no user-specific paths in committed files" rule that applies to all committed artefacts.

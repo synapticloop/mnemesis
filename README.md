@@ -46,6 +46,7 @@ mnemesis load <query>                  # load by exact name, or return ranked ca
 mnemesis save <project>                # save the draft to projects/<project>.yaml
 mnemesis save <project> --yes          # accept every pending change
 mnemesis save <project> --accept <path>   # accept only this diff path (repeatable)
+mnemesis verify <project>              # check every output path exists with the right type
 mnemesis --schema                      # print the embedded JSON Schema
 ```
 

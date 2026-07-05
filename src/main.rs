@@ -38,6 +38,8 @@ enum Command {
         #[arg(long = "accept", value_name = "PATH")]
         accept: Vec<String>,
     },
+    /// Verify that every path declared in a project contract actually exists with the right type.
+    Verify { project: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +92,7 @@ fn run() -> Result<()> {
             yes,
             accept,
         } => save(&project, yes, &accept)?,
+        Command::Verify { project } => verify(&project)?,
     }
     Ok(())
 }
@@ -392,5 +395,122 @@ impl FieldChangePath for FieldChange {
 
 fn print_value<T: Serialize>(value: &T) -> Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum CheckOutcome {
+    Ok,
+    Missing,
+    WrongType { found: &'static str },
+}
+
+#[derive(Debug, Serialize)]
+struct PathCheck {
+    path: String,
+    declared_type: String,
+    outcome: CheckOutcome,
+}
+
+#[derive(Debug, Serialize)]
+struct VerifySummary {
+    total: usize,
+    ok: usize,
+    missing: usize,
+    wrong_type: usize,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum VerifyResult {
+    Verified {
+        project: String,
+        summary: VerifySummary,
+        details: Vec<PathCheck>,
+    },
+    NotFound { project: String },
+}
+
+fn expand_path(raw: &str) -> std::path::PathBuf {
+    if let Some(stripped) = raw.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return std::path::PathBuf::from(home).join(stripped);
+        }
+    }
+    std::path::PathBuf::from(raw)
+}
+
+fn check_output(declared_type: &str, location: &str) -> PathCheck {
+    let path = expand_path(location);
+    let outcome = if !path.exists() {
+        CheckOutcome::Missing
+    } else if declared_type == "file" && !path.is_file() {
+        CheckOutcome::WrongType { found: "directory" }
+    } else if declared_type == "directory" && !path.is_dir() {
+        CheckOutcome::WrongType { found: "file" }
+    } else {
+        CheckOutcome::Ok
+    };
+    PathCheck {
+        path: location.to_string(),
+        declared_type: declared_type.to_string(),
+        outcome,
+    }
+}
+
+fn verify(project: &str) -> Result<()> {
+    let store = Store::new(Store::default_root());
+    store.init()?;
+    let Some(contract) = store.load_project(project)? else {
+        print_value(&Message {
+            ok: true,
+            result: VerifyResult::NotFound {
+                project: project.to_string(),
+            },
+        })?;
+        std::process::exit(1);
+    };
+
+    let mut details = Vec::new();
+    for input in &contract.inputs {
+        for output in &input.outputs {
+            let type_str = match &output.output_type {
+                crate::model::OutputType::File => "file",
+                crate::model::OutputType::Directory => "directory",
+            };
+            details.push(check_output(type_str, &output.location));
+        }
+    }
+
+    let mut ok = 0;
+    let mut missing = 0;
+    let mut wrong_type = 0;
+    for check in &details {
+        match &check.outcome {
+            CheckOutcome::Ok => ok += 1,
+            CheckOutcome::Missing => missing += 1,
+            CheckOutcome::WrongType { .. } => wrong_type += 1,
+        }
+    }
+    let summary = VerifySummary {
+        total: details.len(),
+        ok,
+        missing,
+        wrong_type,
+    };
+    let exit_code = if missing + wrong_type == 0 { 0 } else { 1 };
+
+    print_value(&Message {
+        ok: true,
+        result: VerifyResult::Verified {
+            project: contract.project.name,
+            summary,
+            details,
+        },
+    })?;
+    if exit_code != 0 {
+        std::process::exit(exit_code);
+    }
     Ok(())
 }

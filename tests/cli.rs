@@ -218,3 +218,141 @@ fn schema_flag_prints_json_schema() {
         serde_json::from_str(&body).expect("schema output should be valid JSON");
     assert_eq!(parsed["title"], "Mnemesis Project Contract");
 }
+
+#[test]
+fn verify_returns_ok_when_all_paths_exist() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("projects")).unwrap();
+
+    let existing = dir.path().join("present.txt");
+    fs::write(&existing, "hello").unwrap();
+
+    fs::write(
+        dir.path().join("projects/all-good.yaml"),
+        format!(
+            r#"schema_version: 1
+project:
+  name: all-good
+  description: All paths exist.
+inputs:
+  - name: src
+    description: Source.
+    type: directory
+    outputs:
+      - name: file-output
+        type: file
+        location: "{}"
+    actions: []
+"#,
+            existing.display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mnemesis"))
+        .args(["verify", "all-good"])
+        .env("MNEMESIS_HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "verify should pass when paths exist");
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["result"]["status"], "verified");
+    assert_eq!(body["result"]["summary"]["ok"], 1);
+    assert_eq!(body["result"]["summary"]["missing"], 0);
+    assert_eq!(body["result"]["summary"]["wrong_type"], 0);
+}
+
+#[test]
+fn verify_reports_missing_paths() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("projects")).unwrap();
+
+    fs::write(
+        dir.path().join("projects/has-gap.yaml"),
+        r#"schema_version: 1
+project:
+  name: has-gap
+  description: Has a missing output.
+inputs:
+  - name: src
+    description: Source.
+    type: directory
+    outputs:
+      - name: missing
+        type: file
+        location: /nonexistent/path/that/should/not/exist
+    actions: []
+"#,
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mnemesis"))
+        .args(["verify", "has-gap"])
+        .env("MNEMESIS_HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "verify should fail on missing paths");
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["result"]["summary"]["missing"], 1);
+    assert_eq!(body["result"]["details"][0]["outcome"]["status"], "missing");
+}
+
+#[test]
+fn verify_reports_wrong_type() {
+    let dir = tempdir().unwrap();
+    fs::create_dir_all(dir.path().join("projects")).unwrap();
+
+    // Declare a file but the path is a directory.
+    let confused = dir.path().join("actually-a-dir");
+    fs::create_dir(&confused).unwrap();
+
+    fs::write(
+        dir.path().join("projects/wrong-type.yaml"),
+        format!(
+            r#"schema_version: 1
+project:
+  name: wrong-type
+  description: Output type does not match filesystem.
+inputs:
+  - name: src
+    description: Source.
+    type: directory
+    outputs:
+      - name: declared-file
+        type: file
+        location: "{}"
+    actions: []
+"#,
+            confused.display()
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_mnemesis"))
+        .args(["verify", "wrong-type"])
+        .env("MNEMESIS_HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success(), "verify should fail on wrong type");
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["result"]["summary"]["wrong_type"], 1);
+    assert_eq!(
+        body["result"]["details"][0]["outcome"]["status"],
+        "wrong_type"
+    );
+    assert_eq!(body["result"]["details"][0]["outcome"]["found"], "directory");
+}
+
+#[test]
+fn verify_returns_not_found_for_missing_project() {
+    let dir = tempdir().unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_mnemesis"))
+        .args(["verify", "no-such-project"])
+        .env("MNEMESIS_HOME", dir.path())
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let body: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(body["result"]["status"], "not_found");
+    assert_eq!(body["result"]["project"], "no-such-project");
+}
