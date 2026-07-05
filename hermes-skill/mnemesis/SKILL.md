@@ -52,12 +52,26 @@ Three outcomes from `save`:
 
 Validation runs on every save; a contract with an empty slug, duplicate input name, or missing location is rejected before any file is written.
 
+## Tracking the currently loaded contract
+
+The CLI is stateless. There is no global "current project" — each chat session tracks its own.
+
+While working on a contract, keep the following in your working memory for the duration of the session:
+
+- `loaded_project` — the project name most recently returned by a successful `load`.
+- `loaded_draft_path` — the `draft_path` from that response, if any.
+- `loaded_at` — when the load happened (so you know if it's still current).
+
+Update these on every `load` call. Clear them only when the session ends or the user moves to a different contract. When the user asks "what's loaded?" or "what contract are you working on?", answer from this memory; if both fields are unset, say "no project is currently loaded in this session".
+
+If a `save` call needs the project name and you have lost track, re-run `load` on the most likely candidate — the response will tell you whether you got it right. Never guess at the project name.
+
 ## Procedure for working with a contract
 
 1. `mnemesis load <query>` to find or fetch the contract. If the result is `ambiguous`, ask the user which project they meant and re-run with the exact name. If `not_found`, draft a new contract from scratch (see "Drafting" below).
-2. When the response is `loaded`, read `draft_path` from the response and edit that file.
+2. When the response is `loaded`, record `loaded_project` and `loaded_draft_path` in your working memory, then read `draft_path` and edit that file.
 3. Make the changes in the draft. Keep `project.name` stable unless the user wants a rename (in which case the new name must also be passed as the `<project>` arg to `save`).
-4. `mnemesis save <project>` to apply. If the response is `pending_changes`, inspect the diff JSON. Either:
+4. `mnemesis save <project>` to apply, where `<project>` is your remembered `loaded_project`. If the response is `pending_changes`, inspect the diff JSON. Either:
    - Present the changes to the user and ask which to keep, then re-run `save` with the appropriate `--accept` flags.
    - Or, if the user has already approved the whole edit, re-run `save <project> --yes`.
 5. Confirm by reading back with `mnemesis load <project>` and comparing the contract.
