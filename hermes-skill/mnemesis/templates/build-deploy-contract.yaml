@@ -1,8 +1,8 @@
 schema_version: 1
 project:
   name: <project-slug>
-  description: One-sentence summary. This is the primary search surface;
-    choose words the user is likely to type when looking for this project.
+  description: One-sentence summary of what this project does.
+    Choose words the user is likely to type when looking for it.
 inputs:
   - name: <input-name>
     description: What starting state this input represents.
@@ -14,17 +14,10 @@ inputs:
         location: ./relative/path/from/input/root
     actions:
       - type: successful-build
-        instructions: |
-          What the agent should do when the build succeeded.
-          Be specific about verifying outputs exist and what to report.
+        instructions: Build produced <artifact-name>; one sentence describing what changed and any project-specific invariant the next agent wouldn't infer.
       - type: successful-test
-        instructions: |
-          How to run tests and what counts as a passing report.
+        instructions: All tests pass; one sentence describing the test scope or any test-specific gotcha (e.g. integration tests need a live database).
       - type: successful-publish
-        instructions: |
-          Steps to push the work to wherever it lives (remote, registry, etc.)
-          and how to confirm the push landed.
+        instructions: Output reached its destination; one sentence on how to confirm the publish landed (commit SHA, deployed URL, registry entry, etc.).
       - type: failed-build
-        instructions: |
-          What to report on failure. Include the file path and line number
-          for compiler errors. Do not attempt fixes without user direction.
+        instructions: Report the error verbatim with file and line; do not retry without user direction.

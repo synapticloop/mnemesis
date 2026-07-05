@@ -146,6 +146,45 @@ For a copy-paste starting shape, see `templates/build-deploy-contract.yaml`.
 
 For the conventions used when extending the CLI itself (subcommand shape, response envelopes, exit codes, path expansion, testing), see `references/extending-the-cli.md`.
 
+### What goes in `instructions` (and what doesn't)
+
+`actions[].instructions` describes the **meaning of the outcome** plus any project-specific gotchas — not the recipe for producing it. The contract is *about* the project, not a *manual for* the project.
+
+**Belongs in `instructions`:**
+
+- The semantic intent of the outcome ("build succeeded", "deploy rolled back", "tests passed") in one sentence.
+- Project-specific gotchas the next agent wouldn't know — e.g. "the release binary and installed binary must stay in lockstep", "this cron job's python needs `exec /usr/bin/python3` because the default venv lacks matplotlib".
+- Cross-cutting invariants — what must be true after this outcome (filesystem state, lock files, version pinning).
+- What to *report* to the user (vs the general "report what happened" default).
+
+**Does NOT belong in `instructions`:**
+
+- Step-by-step build / install / test / publish recipes. "Run `cargo build --release`, confirm binary exists, report size" is a description of how to build a Rust project, not what `successful-build` means for this one. Anyone who lands on the contract knows how to build; they need to know what success means here.
+- Standard tool usage. `cargo test`, `pytest`, `npm install` — these are general knowledge. Restating them in every contract wastes the agent's context window and bloats the registry.
+- Commands that should live in `README.md` or a Makefile. If a sequence is more than two commands, it belongs in the project's own build script, not in the contract.
+- Repeating what `verify` already tells the agent. The contract says the output path is `~/foo/bar`; the agent doesn't need the contract to tell it to `ls` that path.
+
+Rule of thumb: if you can delete the sentence without losing anything the next agent wouldn't otherwise know, delete it.
+
+**Before/after example** (mnemesis contract, this project's own self-describing entry):
+
+```yaml
+# WRONG — restates how to run cargo
+- type: successful-build
+  instructions: |
+    Run `cargo build --release` from ~/projects/mnemesis.
+    Confirm the release binary exists at target/release/mnemesis
+    and report its size.
+
+# RIGHT — describes the outcome's meaning and a project-specific invariant
+- type: successful-build
+  instructions: |
+    Build produced the release and debug binaries; report which are
+    fresh and which were already current.
+```
+
+Same six actions either way, but the second version doesn't waste the agent's time restating `cargo build --release`. It points at the project-specific thing ("which are fresh vs current") that the agent couldn't infer on its own.
+
 ### Drafting for an existing-but-unregistered project
 
 A common case: the user is already running the project (scripts in `~/.hermes/scripts/`, code in `~/projects/<name>/`, etc.) and wants the contract to formalise what's there. In this case:
