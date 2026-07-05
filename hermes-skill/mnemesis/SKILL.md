@@ -84,7 +84,7 @@ Exit code is 0 when all checks pass, 1 when any check fails or the project is no
 
 The CLI is stateless. There is no global "current project" — each chat session tracks its own.
 
-While working on a contract, keep the following in your working memory for the duration of the session:
+While working on a contract, keep the following in your working memory for the chat session (persists across `/mnemesis` invocations):
 
 - `loaded_project` — the project name most recently returned by a successful `load`.
 - `loaded_draft_path` — the `draft_path` from that response, if any.
@@ -92,7 +92,19 @@ While working on a contract, keep the following in your working memory for the d
 
 Update these on every `load` call. Clear them only when the session ends or the user moves to a different contract. When the user asks "what's loaded?" or "what contract are you working on?", answer from this memory; if both fields are unset, say "no project is currently loaded in this session".
 
-If a `save` call needs the project name and you have lost track, re-run `load` on the most likely candidate — the response will tell you whether you got it right. Never guess at the project name.
+### Defaulting when the user omits the project name
+
+If the user invokes `/mnemesis save` or `/mnemesis verify` without naming a project, default to the most recent `loaded_project`. The CLI itself doesn't accept a bare `save` or `verify` (clap exits 2), so the agent must substitute the project name before invoking the binary.
+
+Default resolution order:
+
+1. **`loaded_project` from working memory** — use it. This is the common case: the agent loaded the contract earlier in the conversation and the user is following up.
+2. **No remembered project, but the conversation is clearly about mnemesis itself** (the slash command is `/mnemesis`, the user is testing the skill, or the most recent topic was the registry itself) — default to `mnemesis`, the self-describing contract that lives at `~/.mnemesis/projects/mnemesis.yaml`.
+3. **No remembered project and no clear context** — say "no project is currently loaded; which contract should I save/verify?" and ask.
+
+Never guess at the project name silently when (3) applies — but (1) and (2) are not guesses, they are deterministic defaults derived from session state.
+
+If a `save` call needs the project name and you have lost track, re-run `load` on the most likely candidate — the response will tell you whether you got it right.
 
 ## Procedure for working with a contract
 
@@ -156,6 +168,16 @@ Don't ask "want me to copy the scripts too?" — just do the contract, then surf
 - When `save` returns `pending_changes`, surface the diff to the user before re-running with `--accept` or `--yes`.
 
 ## Common pitfalls
+
+### Bare slash-command invocation does not imply a command
+
+If the user types `/mnemesis` (or `/mnemesis load`, `/mnemesis save`, `/mnemesis verify`) with no further payload, do NOT assume a missing command. The skill may be invoked just to load the procedure into context, to test the slash-command plumbing, or because the user is mid-thought. Working memory stays clear, no command runs, and the agent reports "no project is currently loaded in this session" along with concrete next steps (`load <name>`, `verify <name>`, list known contracts). Three bare invocations in one session is a strong signal the user is testing plumbing, not asking for work.
+
+If the user types `/mnemesis load` or `/mnemesis save` or `/mnemesis verify` with no arg, clap rejects it with exit 2 and a usage line. Surface the usage verbatim — do not paraphrase the help text.
+
+### Installed skill and repo skill can diverge
+
+The installed skill at `~/.hermes/skills/mnemesis/` is the version Hermes loads at session start. The repo source at `~/projects/mnemesis/hermes-skill/mnemesis/` is what gets pushed to github. They can drift if either side is edited locally. If the loaded skill content seems richer than what you last committed (new subsections, reference files, templates), or if a feature described in the skill isn't actually implemented in the CLI, check `diff ~/.hermes/skills/mnemesis/SKILL.md ~/projects/mnemesis/hermes-skill/mnemesis/SKILL.md` and offer to sync the repo. The reverse is also possible: agent edits a copy and forgets to sync the other.
 
 ### `patch` mangles multiline YAML block scalars
 
