@@ -1,0 +1,38 @@
+schema_version: 1
+project:
+  name: company-website
+  description: Build and deploy the company website.
+inputs:
+  - name: website-source
+    description: Source directory containing the website application.
+    type: directory
+    outputs:
+      - name: build-directory
+        description: Production-ready static or bundled application files.
+        type: directory
+        location: ./dist
+      - name: deployment-manifest
+        description: Metadata describing the deployed revision and environment.
+        type: file
+        location: ./dist/deployment.json
+    actions:
+      - type: successful-build
+        instructions: |
+          Confirm that every declared build output exists.
+          Summarise the generated artefacts and their locations.
+          Tell the user that the build succeeded, but do not claim deployment occurred.
+      - type: successful-deploy
+        instructions: |
+          Confirm the deployment URL and environment.
+          Include the deployed revision or commit identifier when available.
+          Verify the service health check before reporting success.
+      - type: failed-build
+        instructions: |
+          Tell the user that the build failed.
+          Summarise the relevant error and likely cause.
+          Do not continue to deployment.
+      - type: failed-deploy
+        instructions: |
+          Tell the user that deployment failed.
+          Include the target environment and relevant error details.
+          State whether the previous deployment remains active when known.

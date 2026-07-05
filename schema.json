@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/mnemesis/project-contract.schema.json",
+  "title": "Mnemesis Project Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project", "inputs"],
+  "properties": {
+    "schema_version": { "const": 1, "default": 1 },
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "description"],
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+          "description": { "type": "string", "minLength": 1 },
+          "type": { "enum": ["file", "directory", "text", "url", "other"] },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["name", "type", "location"],
+              "properties": {
+                "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+                "description": { "type": "string" },
+                "type": { "enum": ["file", "directory"] },
+                "location": { "type": "string", "minLength": 1 }
+              }
+            }
+          },
+          "actions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["type", "instructions"],
+              "properties": {
+                "type": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+                "instructions": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
