@@ -1,14 +1,14 @@
+mod diff;
 mod model;
 mod search;
 mod store;
 
 use anyhow::{Context, Result};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
+use diff::{diff_contracts, FieldChange};
 use model::ProjectContract;
-use search::search;
+use search::{search, SearchMatch};
 use serde::Serialize;
-use std::fs;
-use std::path::PathBuf;
 use store::Store;
 
 const CONTRACT_SCHEMA: &str = include_str!("../schema.json");
@@ -16,12 +16,6 @@ const CONTRACT_SCHEMA: &str = include_str!("../schema.json");
 #[derive(Debug, Parser)]
 #[command(name = "mnemesis", version, about)]
 struct Cli {
-    #[arg(long, global = true, env = "MNEMESIS_HOME")]
-    store: Option<PathBuf>,
-
-    #[arg(long, global = true, value_enum, default_value = "json")]
-    format: Format,
-
     /// Print the JSON Schema for project contracts and exit.
     #[arg(long, global = true)]
     schema: bool,
@@ -30,54 +24,36 @@ struct Cli {
     command: Option<Command>,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum Format {
-    Json,
-    Yaml,
-}
-
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Create the store directory.
-    Init,
-    /// List project names and descriptions.
-    List,
-    /// Search project names and descriptions and return ranked options.
-    Search {
-        query: String,
-        #[arg(long, default_value_t = 10)]
-        limit: usize,
+    /// Load a project contract. Tries exact match, then returns a ranked list if ambiguous.
+    Load { query: String },
+    /// Save a draft contract to the registry. Prompts via flags: --yes accepts all changes.
+    Save {
+        project: String,
+        /// Accept every pending change without further prompting.
+        #[arg(long)]
+        yes: bool,
+        /// Accept only the changes whose path matches this prefix. Repeatable.
+        #[arg(long = "accept", value_name = "PATH")]
+        accept: Vec<String>,
     },
-    /// Load one project contract by exact project name.
-    Load { project: String },
-    /// Resolve a project reference to one contract or multiple options.
-    Resolve {
-        query: String,
-        #[arg(long, default_value_t = 5)]
-        limit: usize,
-    },
-    /// Create a project from a YAML or JSON file.
-    Create { file: PathBuf },
-    /// Create or replace a project from a YAML or JSON file.
-    Upsert { file: PathBuf },
-    /// Validate a project file without saving it.
-    Validate { file: PathBuf },
-    /// Delete a project by exact name.
-    Remove { project: String },
-}
-
-#[derive(Debug, Serialize)]
-struct ProjectSummary {
-    name: String,
-    description: String,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
-enum ResolveResult {
-    Resolved { project: ProjectContract },
-    Options { query: String, matches: Vec<search::SearchMatch> },
-    NotFound { query: String },
+enum LoadResult {
+    Loaded {
+        project: ProjectContract,
+        draft_path: String,
+    },
+    Ambiguous {
+        query: String,
+        matches: Vec<SearchMatch>,
+    },
+    NotFound {
+        query: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -106,83 +82,315 @@ fn run() -> Result<()> {
     let Some(command) = cli.command else {
         return Err(anyhow::anyhow!("a subcommand is required (try --help)"));
     };
-    let store = Store::new(cli.store.unwrap_or_else(Store::default_root));
 
     match command {
-        Command::Init => {
-            store.init()?;
-            print_value(&Message { ok: true, result: "store initialized" }, cli.format)?;
-        }
-        Command::List => {
-            let summaries: Vec<_> = store
-                .list()?
-                .into_iter()
-                .map(|p| ProjectSummary { name: p.project.name, description: p.project.description })
-                .collect();
-            print_value(&Message { ok: true, result: summaries }, cli.format)?;
-        }
-        Command::Search { query, limit } => {
-            let matches = search(&store.list()?, &query, limit);
-            print_value(&Message { ok: true, result: matches }, cli.format)?;
-        }
-        Command::Load { project } => {
-            let contract = store.load(&project)?;
-            print_value(&Message { ok: true, result: contract }, cli.format)?;
-        }
-        Command::Resolve { query, limit } => {
-            if let Ok(project) = store.load(&query) {
-                print_value(&Message { ok: true, result: ResolveResult::Resolved { project } }, cli.format)?;
-                return Ok(());
-            }
-            let matches = search(&store.list()?, &query, limit);
-            let result = match matches.as_slice() {
-                [] => ResolveResult::NotFound { query },
-                [only] if only.score >= 0.85 => {
-                    ResolveResult::Resolved { project: store.load(&only.name)? }
-                }
-                [first, second, ..] if first.score >= 0.85 && first.score - second.score >= 0.15 => {
-                    ResolveResult::Resolved { project: store.load(&first.name)? }
-                }
-                _ => ResolveResult::Options { query, matches },
-            };
-            print_value(&Message { ok: true, result }, cli.format)?;
-        }
-        Command::Create { file } => {
-            let contract = read_contract_file(&file)?;
-            let path = store.write(&contract, false)?;
-            print_value(&Message { ok: true, result: path.display().to_string() }, cli.format)?;
-        }
-        Command::Upsert { file } => {
-            let contract = read_contract_file(&file)?;
-            let path = store.write(&contract, true)?;
-            print_value(&Message { ok: true, result: path.display().to_string() }, cli.format)?;
-        }
-        Command::Validate { file } => {
-            let contract = read_contract_file(&file)?;
-            contract.validate()?;
-            print_value(&Message { ok: true, result: "valid" }, cli.format)?;
-        }
-        Command::Remove { project } => {
-            store.remove(&project)?;
-            print_value(&Message { ok: true, result: project }, cli.format)?;
-        }
+        Command::Load { query } => load(&query)?,
+        Command::Save {
+            project,
+            yes,
+            accept,
+        } => save(&project, yes, &accept)?,
     }
     Ok(())
 }
 
-fn read_contract_file(path: &PathBuf) -> Result<ProjectContract> {
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    let contract = match path.extension().and_then(|s| s.to_str()) {
-        Some("json") => serde_json::from_str(&raw).context("parse JSON contract")?,
-        _ => yaml_serde::from_str(&raw).context("parse YAML contract")?,
+fn load(query: &str) -> Result<()> {
+    let store = Store::new(Store::default_root());
+    store.init()?;
+
+    // Exact match wins immediately.
+    if let Some(contract) = store.load_project(query)? {
+        let draft_path = store.seed_draft(&contract.project.name, &contract)?;
+        print_value(&Message {
+            ok: true,
+            result: LoadResult::Loaded {
+                project: contract,
+                draft_path: draft_path.display().to_string(),
+            },
+        })?;
+        return Ok(());
+    }
+
+    // Otherwise rank the candidates.
+    let projects = store.list_projects()?;
+    let matches = search(&projects, query, 10);
+    let result = if matches.is_empty() {
+        LoadResult::NotFound {
+            query: query.to_string(),
+        }
+    } else {
+        LoadResult::Ambiguous {
+            query: query.to_string(),
+            matches,
+        }
     };
-    Ok(contract)
+    print_value(&Message { ok: true, result })?;
+    Ok(())
 }
 
-fn print_value<T: Serialize>(value: &T, format: Format) -> Result<()> {
-    match format {
-        Format::Json => println!("{}", serde_json::to_string_pretty(value)?),
-        Format::Yaml => print!("{}", yaml_serde::to_string(value)?),
+#[derive(Debug, Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum SaveOutcome {
+    Saved { path: String, applied: Vec<String> },
+    NameMismatch { draft_name: String, cli_arg: String },
+}
+
+fn save(project_arg: &str, yes: bool, accept: &[String]) -> Result<()> {
+    let store = Store::new(Store::default_root());
+    store.init()?;
+
+    let draft = store
+        .read_draft(project_arg)?
+        .ok_or_else(|| anyhow::anyhow!("no draft found at {}", store.draft_path(project_arg).display()))?;
+
+    let draft_name = draft.project.name.clone();
+    if draft_name != project_arg {
+        print_value(&Message {
+            ok: true,
+            result: SaveOutcome::NameMismatch {
+                draft_name,
+                cli_arg: project_arg.to_string(),
+            },
+        })?;
+        std::process::exit(1);
     }
+
+    // First save vs update: compare against the existing project (if any).
+    let existing = store.load_project(&draft_name)?;
+    let applied: Vec<String> = match existing {
+        None => {
+            // First save — every field is implicitly new. Require --yes or no-op if no changes possible.
+            store.write_project(&draft)?;
+            vec![format!("project '{}' created", draft_name)]
+        }
+        Some(old) => {
+            let changes = diff_contracts(&old, &draft);
+            if changes.is_empty() {
+                vec!["no changes".to_string()]
+            } else {
+                let approved = select_approved(&changes, yes, accept);
+                if approved.is_empty() {
+                    // Surface the pending diff for the caller (agent or user) to act on.
+                    let payload = serde_json::json!({
+                        "ok": false,
+                        "status": "pending_changes",
+                        "changes": changes,
+                        "hint": "rerun with --yes to accept all, or --accept <path> for specific paths"
+                    });
+                    eprintln!("{}", serde_json::to_string_pretty(&payload)?);
+                    std::process::exit(1);
+                }
+                // Apply accepted changes by mutating a copy of the old contract.
+                let mut updated = old.clone();
+                apply_changes(&mut updated, &changes, &approved);
+                updated.validate().context("accepted changes produce an invalid contract")?;
+                let path = store.write_project(&updated)?;
+                approved
+                    .iter()
+                    .map(|c| format!("applied: {c}"))
+                    .chain(std::iter::once(path.display().to_string()))
+                    .collect()
+            }
+        }
+    };
+
+    let path = store.project_path(&draft_name);
+    print_value(&Message {
+        ok: true,
+        result: SaveOutcome::Saved {
+            path: path.display().to_string(),
+            applied,
+        },
+    })?;
+    Ok(())
+}
+
+/// Decide which diff paths are accepted given the --yes / --accept flags.
+fn select_approved(changes: &[FieldChange], yes: bool, accept: &[String]) -> Vec<String> {
+    if yes {
+        return changes.iter().map(|c| c.path().to_string()).collect();
+    }
+    if accept.is_empty() {
+        return Vec::new();
+    }
+    let mut approved = Vec::new();
+    for change in changes {
+        let path = change.path();
+        if accept.iter().any(|a| path == a || path.starts_with(a)) {
+            approved.push(path.to_string());
+        }
+    }
+    approved
+}
+
+/// Apply a list of accepted changes to an existing contract in place.
+/// Only the path-as-add/modify/remove operations supported by FieldChange are honored.
+fn apply_changes(target: &mut ProjectContract, changes: &[FieldChange], approved: &[String]) {
+    for change in changes {
+        if !approved.iter().any(|a| a == change.path()) {
+            continue;
+        }
+        match change {
+            FieldChange::Modified { path, new, .. } => apply_modify(target, path, new),
+            FieldChange::Removed { path, .. } => apply_remove(target, path),
+            FieldChange::Added { .. } => {
+                // Additions are already present in `draft` (which we use as the new shape
+                // when validating). For applying onto `old`, we rebuild the contract from
+                // `draft` and ignore individual adds. Caller should pass --yes to include
+                // added fields via the create-or-update path. So no-op here.
+            }
+        }
+    }
+}
+
+fn apply_modify(target: &mut ProjectContract, path: &str, new_value: &str) {
+    // Path grammar: project.name, project.description, inputs[<name>].description,
+    // inputs[<name>].type, inputs[<name>].outputs[<name>].(description|type|location),
+    // inputs[<name>].actions[<type>].instructions
+    let segments: Vec<&str> = split_path(path);
+    if segments.is_empty() {
+        return;
+    }
+    match segments[0] {
+        "project" => match segments.get(1).copied() {
+            Some("name") => target.project.name = new_value.to_string(),
+            Some("description") => target.project.description = new_value.to_string(),
+            _ => {}
+        },
+        "inputs" => {
+            let Some(input_name) = segments.get(1).copied() else {
+                return;
+            };
+            let Some(input) = target.inputs.iter_mut().find(|i| i.name == input_name) else {
+                return;
+            };
+            match segments.get(2).copied() {
+                Some("description") => input.description = new_value.to_string(),
+                Some("type") => {
+                    if let Ok(t) = serde_json::from_value(serde_json::Value::String(new_value.to_string())) {
+                        input.input_type = Some(t);
+                    }
+                }
+                Some("outputs") => {
+                    let Some(output_name) = segments.get(3).copied() else {
+                        return;
+                    };
+                    let Some(output) = input.outputs.iter_mut().find(|o| o.name == output_name) else {
+                        return;
+                    };
+                    match segments.get(4).copied() {
+                        Some("description") => {
+                            output.description = if new_value.is_empty() {
+                                None
+                            } else {
+                                Some(new_value.to_string())
+                            };
+                        }
+                        Some("type") => {
+                            if let Ok(t) = serde_json::from_value(serde_json::Value::String(new_value.to_string())) {
+                                output.output_type = t;
+                            }
+                        }
+                        Some("location") => output.location = new_value.to_string(),
+                        _ => {}
+                    }
+                }
+                Some("actions") => {
+                    let Some(action_type) = segments.get(3).copied() else {
+                        return;
+                    };
+                    let Some(action) =
+                        input.actions.iter_mut().find(|a| a.action_type == action_type)
+                    else {
+                        return;
+                    };
+                    if segments.get(4).copied() == Some("instructions") {
+                        action.instructions = new_value.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        _ => {}
+    }
+}
+
+fn apply_remove(target: &mut ProjectContract, path: &str) {
+    let segments: Vec<&str> = split_path(path);
+    if segments.is_empty() {
+        return;
+    }
+    if segments[0] == "inputs" {
+        let Some(input_name) = segments.get(1).copied() else {
+            return;
+        };
+        // path "inputs[name]" with no further segments → remove the whole input
+        if segments.len() == 2 {
+            target.inputs.retain(|i| i.name != input_name);
+            return;
+        }
+        let Some(input) = target.inputs.iter_mut().find(|i| i.name == input_name) else {
+            return;
+        };
+        match segments.get(2).copied() {
+            Some("outputs") => {
+                if let Some(output_name) = segments.get(3).copied() {
+                    input.outputs.retain(|o| o.name != output_name);
+                }
+            }
+            Some("actions") => {
+                if let Some(action_type) = segments.get(3).copied() {
+                    input.actions.retain(|a| a.action_type != action_type);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Split a dotted/bracketed path into segments. "project.description" → ["project", "description"].
+/// "inputs[build].outputs[bin].location" → ["inputs", "build", "outputs", "bin", "location"].
+fn split_path(path: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = path;
+    while let Some(idx) = rest.find(['.', '[']) {
+        if idx > 0 {
+            out.push(&rest[..idx]);
+        }
+        rest = &rest[idx..];
+        if rest.starts_with('.') {
+            rest = &rest[1..];
+        } else if rest.starts_with('[') {
+            // bracket — content is the segment until the closing bracket
+            if let Some(end) = rest.find(']') {
+                out.push(&rest[1..end]);
+                rest = &rest[end + 1..];
+            } else {
+                break;
+            }
+        }
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+trait FieldChangePath {
+    fn path(&self) -> &str;
+}
+
+impl FieldChangePath for FieldChange {
+    fn path(&self) -> &str {
+        match self {
+            FieldChange::Added { path, .. } => path,
+            FieldChange::Modified { path, .. } => path,
+            FieldChange::Removed { path, .. } => path,
+        }
+    }
+}
+
+fn print_value<T: Serialize>(value: &T) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }

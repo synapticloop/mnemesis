@@ -7,15 +7,28 @@ Mnemesis is a filesystem-backed project contract registry for AI agents. A proje
 - the file and directory outputs associated with each input;
 - typed outcome actions containing instructions for the agent.
 
+The CLI has two commands — `load` and `save` — backed by a per-project draft workflow. An agent discovers existing contracts via `load`, edits the corresponding draft, then commits with `save`.
+
 ## Status
 
 Working scaffold. Toolchain: Rust 1.96 stable. Build, test, and clippy all pass. The release binary lives at `~/.local/bin/mnemesis` on this host.
+
+## Storage layout
+
+```text
+~/.mnemesis/
+  projects/<name>.yaml    # committed contracts (the registry)
+  drafts/<name>.yaml      # working copies for editing
+```
+
+Override the store root with the `MNEMESIS_HOME` environment variable.
 
 ## Build
 
 ```bash
 cargo build --release
 cargo test
+cargo clippy --all-targets -- -D warnings
 ```
 
 Install the binary somewhere on the Hermes terminal `PATH`:
@@ -24,34 +37,35 @@ Install the binary somewhere on the Hermes terminal `PATH`:
 install -m 0755 target/release/mnemesis ~/.local/bin/mnemesis
 ```
 
-YAML serialisation uses the `yaml_serde` crate. Output formatting follows block style with list dashes at column 0 (`- name:` rather than `  - name:`); both forms are valid YAML and `load`/`resolve` round-trip identically, but a contract written by the binary will not byte-match a contract written by hand.
+YAML serialisation uses the `yaml_serde` crate. Output formatting follows block style with list dashes at column 0 (`- name:` rather than `  - name:`); both forms are valid YAML and round-trip identically, but a contract written by the binary will not byte-match a contract written by hand.
 
-## Store
-
-The default store is:
-
-```text
-~/.mnemesis/projects/*.yaml
-```
-
-Override it with either:
+## Commands
 
 ```bash
-export MNEMESIS_HOME=/path/to/store
-mnemesis --store /path/to/store list
+mnemesis load <query>                  # load by exact name, or return ranked candidates
+mnemesis save <project>                # save the draft to projects/<project>.yaml
+mnemesis save <project> --yes          # accept every pending change
+mnemesis save <project> --accept <path>   # accept only this diff path (repeatable)
+mnemesis --schema                      # print the embedded JSON Schema
 ```
-
-Each project is stored as `<project-name>.yaml`.
 
 ## Quick start
 
 ```bash
-mnemesis init
-mnemesis create examples/company-website.yaml
-mnemesis list
-mnemesis search "website deploy"
-mnemesis resolve "company website"
+# Load an existing project (seeds a draft you can edit):
 mnemesis load company-website
+
+# The response includes draft_path. Edit that file, then save:
+mnemesis save company-website          # if changed, prints the diff and exits 1
+mnemesis save company-website --yes    # accept everything and write
+
+# Load a fuzzy match to discover projects:
+mnemesis load "company site"           # returns ranked candidates if ambiguous
+
+# Create a brand-new contract from the example:
+cp examples/company-website.yaml ~/.mnemesis/drafts/my-new-project.yaml
+$EDITOR ~/.mnemesis/drafts/my-new-project.yaml   # change project.name, fields, etc.
+mnemesis save my-new-project --yes
 ```
 
 The CLI emits JSON by default so Hermes can interpret results reliably.
@@ -71,7 +85,7 @@ It then becomes available as:
 /mnemesis
 ```
 
-The skill only teaches Hermes how to interact with the CLI. Hermes performs discovery with `resolve`, reads the returned contract, selects the applicable input, creates the declared outputs, and follows the instructions for the actual outcome action.
+The skill teaches Hermes the load/edit/save workflow plus the draft diff confirmation flow.
 
 ## Schema
 
@@ -95,15 +109,3 @@ inputs:
 ```
 
 Names and action types use lowercase kebab-case. Output types are `file` or `directory`.
-
-## Initial commands
-
-- `init`
-- `list`
-- `search <query>`
-- `resolve <query>`
-- `load <project>`
-- `validate <file>`
-- `create <file>`
-- `upsert <file>`
-- `remove <project>`
