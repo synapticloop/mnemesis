@@ -1,0 +1,30 @@
+schema_version: 1
+project:
+  name: <project-slug>
+  description: One-sentence summary. This is the primary search surface;
+    choose words the user is likely to type when looking for this project.
+inputs:
+  - name: <input-name>
+    description: What starting state this input represents.
+    type: directory
+    outputs:
+      - name: <artifact-name>
+        description: Optional. What this artifact is.
+        type: file
+        location: ./relative/path/from/input/root
+    actions:
+      - type: successful-build
+        instructions: |
+          What the agent should do when the build succeeded.
+          Be specific about verifying outputs exist and what to report.
+      - type: successful-test
+        instructions: |
+          How to run tests and what counts as a passing report.
+      - type: successful-publish
+        instructions: |
+          Steps to push the work to wherever it lives (remote, registry, etc.)
+          and how to confirm the push landed.
+      - type: failed-build
+        instructions: |
+          What to report on failure. Include the file path and line number
+          for compiler errors. Do not attempt fixes without user direction.

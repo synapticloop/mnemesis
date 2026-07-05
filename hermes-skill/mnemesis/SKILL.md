@@ -132,6 +132,8 @@ The full schema is available via `mnemesis --schema` for self-checking.
 
 For a copy-paste starting shape, see `templates/build-deploy-contract.yaml`.
 
+For the conventions used when extending the CLI itself (subcommand shape, response envelopes, exit codes, path expansion, testing), see `references/extending-the-cli.md`.
+
 ### Drafting for an existing-but-unregistered project
 
 A common case: the user is already running the project (scripts in `~/.hermes/scripts/`, code in `~/projects/<name>/`, etc.) and wants the contract to formalise what's there. In this case:
@@ -183,3 +185,7 @@ Mitigations:
 ### Output paths in instructions: prefer `~` over `/home/<user>/`
 
 When writing path references into a contract's `instructions` blocks, use `~/projects/<name>/...` and `~/hermes/...` — not `/home/<user>/...`. The contract may be shared, copied, or read by other agents; absolute home paths embed the current user's identity. This matches the broader "no user-specific paths in committed files" rule that applies to all committed artefacts.
+
+### `MNEMESIS_HOME` set in a stale shell silently redirects the entire CLI
+
+A surprising number of `not_found` results come from a leftover `export MNEMESIS_HOME=/tmp/some-smoke-test-dir` from earlier in the session. The CLI honours `MNEMESIS_HOME` over the default `~/.mnemesis/`, so a stale export makes `load`, `verify`, and `save` all look at the wrong store while the contracts at `~/.mnemesis/projects/` keep accumulating. Symptom: `verify mnemesis` returns `not_found` even though the contract is plainly visible in `ls ~/.mnemesis/projects/`. Before debugging the contract itself, run `echo "$MNEMESIS_HOME"` and unset it if it points somewhere unexpected (`unset MNEMESIS_HOME`). The installed shell session may carry this across `terminal()` invocations within one Hermes chat session.
